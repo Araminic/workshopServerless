@@ -1,11 +1,14 @@
+const wrap = require('@dazn/lambda-powertools-pattern-basic')
+const Log = require('@dazn/lambda-powertools-logger')
+const ssm = require('@middy/ssm')
 const DocumentClient = require('aws-sdk/clients/dynamodb').DocumentClient
 const dynamodb = new DocumentClient()
 
-const defaultResults = process.env.defaultResults || 8
+const { serviceName, stage } = process.env
 const tableName = process.env.restaurants_table
 
 const findRestaurantsByTheme = async (theme, count) => {
-  console.log(`finding (up to ${count}) restaurants with the theme ${theme}...`)
+  Log.debug('finding up to this number of restaurants with this theme', {count, theme})
   const req = {
     TableName: tableName,
     Limit: count,
@@ -14,18 +17,37 @@ const findRestaurantsByTheme = async (theme, count) => {
   }
 
   const resp = await dynamodb.scan(req).promise()
-  console.log(`found ${resp.Items.length} restaurants`)
+  Log.debug('found this number on restaurants...',  resp.Items.length )
   return resp.Items
 }
 
-module.exports.handler = async (event, context) => {
+module.exports.handler = wrap(async (event, context) => {
   const req = JSON.parse(event.body)
   const theme = req.theme
-  const restaurants = await findRestaurantsByTheme(theme, defaultResults)
+  Log.info(context.secretString)
+  const restaurants = await findRestaurantsByTheme(theme, process.env.defaultResults)
   const response = {
     statusCode: 200,
     body: JSON.stringify(restaurants)
   }
 
   return response
-}
+}).use(ssm({
+  cache: true,
+  cacheExpiryInMillis: 5 * 60 * 1000, // 5 mins
+  names: {
+    config: `/${serviceName}/${stage}/search-restaurants/config`
+  },
+  onChange: () => {
+    const config = JSON.parse(process.env.config)
+    process.env.defaultResults = config.defaultResults
+  }
+})).use(ssm({
+  cache: true,
+  cacheExpiryInMillis: 5 * 60 * 1000, // 5 mins
+  names: {
+    secretString: `/${serviceName}/${stage}/search-restaurants/secretString`
+  },
+  setToContext: true,
+  throwOnFailedCall: true
+}))
